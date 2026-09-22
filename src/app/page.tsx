@@ -1,57 +1,39 @@
 "use client";
 
-import React, { useState } from 'react';
-
-// === Ma'lumotlar va tiplar ===
-const mockStudents = [
-  { 
-    id: 1, name: "Aliyev Vali", phone: "+998 90 123 45 67", address: "Toshkent sh., Yunusobod", dob: "15.04.2008",
-    stats: {
-      absences: [{ date: "10.09.2026", reason: "Kasal bo'lgan" }, { date: "12.09.2026", reason: "Sababsiz" }],
-      lates: [{ date: "14.09.2026", reason: "Tirbandlik", time: "08:15" }]
-    }
-  },
-  { 
-    id: 2, name: "Karimova Nargiza", phone: "+998 93 987 65 43", address: "Toshkent sh., Chilonzor", dob: "22.08.2008",
-    stats: {
-      absences: [],
-      lates: [{ date: "05.09.2026", reason: "Avtobus kechikdi", time: "08:10" }]
-    }
-  },
-  { 
-    id: 3, name: "Toshmatov Eshmat", phone: "+998 99 111 22 33", address: "Toshkent sh., Mirzo Ulug'bek", dob: "03.11.2007",
-    stats: {
-      absences: [{ date: "01.09.2026", reason: "Oilaviy sharoit" }],
-      lates: []
-    }
-  },
-  { 
-    id: 4, name: "Boltaboyev Qodir", phone: "+998 90 555 44 33", address: "Toshkent sh., Olmazor", dob: "10.01.2008",
-    stats: { absences: [], lates: [] }
-  },
-  { 
-    id: 5, name: "Sobirova Malika", phone: "+998 97 777 88 99", address: "Toshkent sh., Sergeli", dob: "25.12.2008",
-    stats: { absences: [], lates: [] }
-  },
-];
-
-const USERS = [
-  { username: 'xumyunmirzo', password: 'thexumo00', role: 'sardor', name: 'Xumoyunmirzo (Asosiy Sardor)' },
-  { username: 'Ruxshona', password: 'theruxshona99', role: 'sardor', name: 'Ruxshona (Qizlar Sardori)' },
-  { username: 'Shahnozateacher', password: 'Shm0007@', role: 'oqituvchi', name: 'Shahnoza Ustoz' },
-];
+import React, { useState, useEffect } from 'react';
+import { 
+  getUsers, 
+  getStudents, 
+  getSession, 
+  createOrUpdateSession, 
+  submitAttendance, 
+  closeSession, 
+  getHistorySessions 
+} from '@/app/actions';
 
 type Role = 'sardor' | 'oqituvchi';
 type AbsenceStatus = 'kelmadi' | 'sababli' | 'kech_qoldi';
 
 interface User {
+  id: string;
   username: string;
   role: Role;
   name: string;
 }
 
+interface Student {
+  id: string;
+  name: string;
+  phone?: string;
+  dob?: string;
+  stats?: {
+    absences: any[];
+    lates: any[];
+  }
+}
+
 interface AbsenceRecord {
-  id: number;
+  id: string;
   reason: string;
   status: AbsenceStatus;
   time?: string;
@@ -76,27 +58,99 @@ export default function Home() {
   const [searchTerm, setSearchTerm] = useState("");
   const [isSending, setIsSending] = useState(false);
   
-  const [absentStudents, setAbsentStudents] = useState<Record<number, { reason: string }>>({});
+  const [absentStudents, setAbsentStudents] = useState<Record<string, { reason: string }>>({});
   const [todayAbsences, setTodayAbsences] = useState<AbsenceRecord[]>([]);
   const [isAttendanceDone, setIsAttendanceDone] = useState(false);
   const [isAttendanceClosed, setIsAttendanceClosed] = useState(false); 
 
+  const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
+  const [statsViewDetail, setStatsViewDetail] = useState<'jami' | 'bor' | 'yoq' | null>(null);
+  const [customMessage, setCustomMessage] = useState("");
+
+  // DB States
+  const [isLoading, setIsLoading] = useState(true);
+  const [dbUsers, setDbUsers] = useState<any[]>([]);
+  const [dbStudents, setDbStudents] = useState<Student[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
 
-  // Akkordeon (ochilib-yopilishi) uchun state
-  const [expandedStudentId, setExpandedStudentId] = useState<number | null>(null);
+  useEffect(() => {
+    async function loadInitialData() {
+      try {
+        const users = await getUsers();
+        setDbUsers(users);
 
-  // Statistika modal oynasi
-  const [statsViewDetail, setStatsViewDetail] = useState<'jami' | 'bor' | 'yoq' | null>(null);
+        const studentsData = await getStudents();
+        
+        // Transform student attendances into stats
+        const formattedStudents = studentsData.map((s: any) => {
+          const absences = s.attendances
+            .filter((a: any) => a.status === 'kelmadi' || a.status === 'sababli')
+            .map((a: any) => ({ date: new Date(a.session.date).toLocaleDateString('uz-UZ'), reason: a.reason }));
+            
+          const lates = s.attendances
+            .filter((a: any) => a.status === 'kech_qoldi')
+            .map((a: any) => ({ date: new Date(a.session.date).toLocaleDateString('uz-UZ'), reason: a.reason, time: a.time }));
 
-  // Ustoz uchun qo'lda yoziladigan xabar
-  const [customMessage, setCustomMessage] = useState("");
+          return {
+            ...s,
+            stats: { absences, lates }
+          };
+        });
+        setDbStudents(formattedStudents);
+
+        const session = await getSession();
+        if (session) {
+          setSessionId(session.id);
+          setIsAttendanceClosed(session.isClosed);
+          
+          if (session.attendances && session.attendances.length > 0) {
+            setIsAttendanceDone(true);
+            const loadedAbsences = session.attendances.map((a: any) => ({
+              id: a.studentId,
+              reason: a.reason || "",
+              status: a.status as AbsenceStatus,
+              time: a.time || ""
+            }));
+            setTodayAbsences(loadedAbsences);
+          }
+        }
+      } catch (e) {
+        console.error("Data load error:", e);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadInitialData();
+  }, []);
+
+  const loadHistory = async () => {
+    const historyData = await getHistorySessions();
+    const formattedHistory = historyData.map((h: any) => ({
+      date: new Date(h.date).toLocaleDateString('uz-UZ'),
+      totalStudents: dbStudents.length,
+      absentCount: h.attendances.filter((a: any) => a.status === 'kelmadi').length,
+      details: h.attendances.map((a: any) => ({
+        id: a.student.id,
+        reason: a.reason || "",
+        status: a.status,
+        time: a.time || ""
+      }))
+    }));
+    setHistory(formattedHistory);
+  };
+
+  useEffect(() => {
+    if (currentTab === 'history') {
+      loadHistory();
+    }
+  }, [currentTab]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const user = USERS.find(u => u.username === loginUsername && u.password === loginPassword);
+    const user = dbUsers.find(u => u.username === loginUsername && u.password === loginPassword);
     if (user) {
-      setCurrentUser({ username: user.username, role: user.role as Role, name: user.name });
+      setCurrentUser({ id: user.id, username: user.username, role: user.role as Role, name: user.name });
       setLoginError("");
     } else {
       setLoginError("Login yoki parol noto'g'ri!");
@@ -110,6 +164,20 @@ export default function Home() {
     setCurrentTab('dashboard');
     setIsTakingAttendance(false);
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="text-blue-600 font-bold text-xl flex items-center gap-2">
+           <svg className="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+           </svg>
+           Ma'lumotlar bazadan yuklanmoqda...
+        </div>
+      </div>
+    )
+  }
 
   if (!currentUser) {
     return (
@@ -155,11 +223,11 @@ export default function Home() {
     );
   }
 
-  const filteredStudents = mockStudents.filter(s => 
+  const filteredStudents = dbStudents.filter(s => 
     s.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const toggleAbsent = (id: number) => {
+  const toggleAbsent = (id: string) => {
     setAbsentStudents(prev => {
       const newState = { ...prev };
       if (newState[id]) delete newState[id];
@@ -168,30 +236,49 @@ export default function Home() {
     });
   };
 
-  const updateReason = (id: number, reason: string) => {
+  const updateReason = (id: string, reason: string) => {
     setAbsentStudents(prev => ({ ...prev, [id]: { ...prev[id], reason } }));
   };
 
   const sendToTelegram = async () => {
     setIsSending(true);
+    
+    // DB Session
+    let activeSessionId = sessionId;
+    if (!activeSessionId) {
+      const session = await createOrUpdateSession();
+      activeSessionId = session.id;
+      setSessionId(session.id);
+    }
+
+    const finalizedAbsences: AbsenceRecord[] = Object.keys(absentStudents).map(idStr => ({
+      id: idStr,
+      reason: absentStudents[idStr].reason,
+      status: 'kelmadi'
+    }));
+
+    // DB Submission
+    await submitAttendance(activeSessionId, finalizedAbsences.map(a => ({
+      studentId: a.id,
+      status: a.status,
+      reason: a.reason,
+      time: a.time
+    })));
+
+    // Telegram
     const absentData = Object.keys(absentStudents).map(id => {
-      const student = mockStudents.find(s => s.id === parseInt(id));
-      return { id: student?.id, name: student?.name, reason: absentStudents[parseInt(id)].reason };
+      const student = dbStudents.find(s => s.id === id);
+      return { id: student?.id, name: student?.name, reason: absentStudents[id].reason };
     });
 
     try {
       const res = await fetch('/api/telegram', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ totalStudents: mockStudents.length, absentStudents: absentData })
+        body: JSON.stringify({ totalStudents: dbStudents.length, absentStudents: absentData })
       });
       if (res.ok) {
-        alert("Ma'lumotlar muvaffaqiyatli Telegramga yuborildi!");
-        const finalizedAbsences: AbsenceRecord[] = Object.keys(absentStudents).map(idStr => ({
-          id: parseInt(idStr),
-          reason: absentStudents[parseInt(idStr)].reason,
-          status: 'kelmadi'
-        }));
+        alert("Ma'lumotlar muvaffaqiyatli saqlandi va Telegramga yuborildi!");
         setTodayAbsences(finalizedAbsences);
         setIsAttendanceDone(true);
         setIsTakingAttendance(false);
@@ -214,9 +301,19 @@ export default function Home() {
   };
 
   const sendUpdateToTelegram = async () => {
+    if (!sessionId) return;
     setIsSending(true);
+
+    // Update DB
+    await submitAttendance(sessionId, todayAbsences.map(a => ({
+      studentId: a.id,
+      status: a.status,
+      reason: a.reason,
+      time: a.time
+    })));
+
     const updatedData = todayAbsences.map(record => {
-      const student = mockStudents.find(s => s.id === record.id);
+      const student = dbStudents.find(s => s.id === record.id);
       return { id: student?.id, name: student?.name, reason: record.reason, status: record.status, time: record.time };
     });
 
@@ -224,30 +321,26 @@ export default function Home() {
       const res = await fetch('/api/telegram', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isUpdate: true, totalStudents: mockStudents.length, updatedStudents: updatedData })
+        body: JSON.stringify({ isUpdate: true, totalStudents: dbStudents.length, updatedStudents: updatedData })
       });
       if (res.ok) alert("O'zgarishlar Telegramga yuborildi!");
     } catch (error) {} finally { setIsSending(false); }
   };
 
-  const closeAttendance = () => {
+  const closeAttendanceAction = async () => {
+    if (!sessionId) return;
     const confirmClose = window.confirm("Davomatni yopmoqchimisiz?");
     if (!confirmClose) return;
 
-    const newHistoryRecord: HistoryRecord = {
-      date: new Date().toLocaleDateString('uz-UZ'),
-      totalStudents: mockStudents.length,
-      absentCount: todayAbsences.filter(a => a.status === 'kelmadi').length,
-      details: [...todayAbsences]
-    };
-    
-    setHistory([newHistoryRecord, ...history]);
+    // Yopish so'rovi (DB)
+    await closeSession(sessionId);
+
     setIsAttendanceClosed(true);
-    alert("Davomat yopildi!");
+    alert("Davomat tasdiqlandi va yopildi!");
     setCurrentTab('history');
   };
 
-  const updateStatus = (id: number, newStatus: AbsenceStatus) => {
+  const updateStatus = (id: string, newStatus: AbsenceStatus) => {
     setTodayAbsences(prev => prev.map(record => {
       if (record.id === id) {
         return {
@@ -260,7 +353,7 @@ export default function Home() {
     }));
   };
 
-  const updateExistingReason = (id: number, newReason: string) => {
+  const updateExistingReason = (id: string, newReason: string) => {
     setTodayAbsences(prev => prev.map(record => record.id === id ? { ...record, reason: newReason } : record));
   };
 
@@ -396,7 +489,7 @@ export default function Home() {
                       className="bg-white p-5 sm:p-6 rounded-xl shadow-sm border-l-4 border-blue-500 cursor-pointer hover:bg-blue-50 transition transform hover:-translate-y-1"
                     >
                       <h3 className="text-sm sm:text-base font-bold text-gray-500 uppercase tracking-wide">Jami O'quvchilar</h3>
-                      <p className="text-3xl sm:text-4xl font-black mt-2 text-gray-800">{mockStudents.length} <span className="text-lg font-normal text-gray-400">ta</span></p>
+                      <p className="text-3xl sm:text-4xl font-black mt-2 text-gray-800">{dbStudents.length} <span className="text-lg font-normal text-gray-400">ta</span></p>
                     </div>
                     <div 
                       onClick={() => { if (isAttendanceDone || isAttendanceClosed) setStatsViewDetail('bor'); else alert("Avval davomat kiritilishi kerak!") }}
@@ -404,7 +497,7 @@ export default function Home() {
                     >
                       <h3 className="text-sm sm:text-base font-bold text-gray-500 uppercase tracking-wide">Bugun ishtirok etyapti</h3>
                       <p className="text-3xl sm:text-4xl font-black mt-2 text-green-600">
-                        {isAttendanceDone || isAttendanceClosed ? mockStudents.length - todayAbsences.filter(a => a.status === 'kelmadi').length : '-'} 
+                        {isAttendanceDone || isAttendanceClosed ? dbStudents.length - todayAbsences.filter(a => a.status === 'kelmadi').length : '-'} 
                       </p>
                     </div>
                     <div 
@@ -441,7 +534,7 @@ export default function Home() {
                       ) : (
                         <div className="divide-y divide-gray-100">
                           {todayAbsences.map(record => {
-                            const student = mockStudents.find(s => s.id === record.id);
+                            const student = dbStudents.find(s => s.id === record.id);
                             if (!student) return null;
                             return (
                               <div key={record.id} className="p-4 sm:p-6 flex flex-col xl:flex-row xl:items-center justify-between gap-5 transition hover:bg-gray-50">
@@ -479,7 +572,7 @@ export default function Home() {
                             disabled={isSending}
                             className={`w-full sm:w-auto text-sm sm:text-base ${isSending ? 'bg-gray-400' : 'bg-white border-2 border-blue-600 text-blue-700 hover:bg-blue-50'} px-6 py-3 rounded-lg shadow-sm transition font-bold`}
                           >
-                            {isSending ? 'Yuborilmoqda...' : "O'zgarishni Telegramga yuborish"}
+                            {isSending ? 'Yuborilmoqda...' : "O'zgarishni Telegramga yuborish va Saqlash"}
                           </button>
                         ) : (
                           <div></div>
@@ -487,7 +580,7 @@ export default function Home() {
 
                         {currentUser.role === 'oqituvchi' ? (
                           <button 
-                            onClick={closeAttendance}
+                            onClick={closeAttendanceAction}
                             className="w-full sm:w-auto text-sm sm:text-base bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-lg shadow-md transition font-bold border-b-4 border-green-800 active:border-b-0 active:mt-1"
                           >
                             ✅ Davomatni tasdiqlash va Yopish
@@ -533,7 +626,7 @@ export default function Home() {
                     <p className="text-gray-600 font-semibold text-sm sm:text-lg">
                       Jami belgilandi: <span className="text-red-600 font-black bg-red-100 px-3 py-1 rounded-full ml-2">{Object.keys(absentStudents).length}</span>
                     </p>
-                    <button onClick={sendToTelegram} disabled={isSending} className={`w-full sm:w-auto ${isSending ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} text-white px-8 py-3.5 rounded-xl font-bold shadow-md transition-all text-sm sm:text-base`}>Tasdiqlash va Yuborish</button>
+                    <button onClick={sendToTelegram} disabled={isSending} className={`w-full sm:w-auto ${isSending ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} text-white px-8 py-3.5 rounded-xl font-bold shadow-md transition-all text-sm sm:text-base`}>Saqlash va Yuborish</button>
                   </div>
                 </div>
               )}
@@ -544,12 +637,11 @@ export default function Home() {
             <div className="animate-fade-in">
               <h2 className="text-2xl sm:text-3xl font-bold mb-6 sm:mb-8 text-gray-800">🧑‍🎓 O'quvchilar ro'yxati</h2>
               <div className="space-y-3">
-                {mockStudents.map(student => {
+                {dbStudents.map(student => {
                   const isExpanded = expandedStudentId === student.id;
                   
                   return (
                     <div key={student.id} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden transition-all duration-200">
-                      {/* Accordion header: Faqat FISH ko'rinadi */}
                       <button 
                         onClick={() => setExpandedStudentId(isExpanded ? null : student.id)}
                         className="w-full text-left p-4 sm:p-5 flex justify-between items-center bg-white hover:bg-gray-50 transition"
@@ -560,22 +652,20 @@ export default function Home() {
                         </span>
                       </button>
 
-                      {/* Accordion content: Qolgan barcha ma'lumotlar */}
                       {isExpanded && (
                         <div className="p-4 sm:p-5 border-t border-gray-100 bg-gray-50">
                           
                           <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-6">
-                            <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded text-sm font-bold">📱 {student.phone}</span>
-                            <span className="bg-purple-100 text-purple-800 px-3 py-1 rounded text-sm font-bold">🎂 {student.dob}</span>
+                            <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded text-sm font-bold">📱 {student.phone || 'Kiritilmagan'}</span>
+                            <span className="bg-purple-100 text-purple-800 px-3 py-1 rounded text-sm font-bold">🎂 {student.dob || 'Kiritilmagan'}</span>
                           </div>
                           
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {/* Kelmagan kunlari */}
                             <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100">
                               <h4 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
-                                <span className="text-red-500 font-black text-lg">{student.stats.absences.length} marta</span> Kelmagan
+                                <span className="text-red-500 font-black text-lg">{student.stats?.absences.length} marta</span> Kelmagan
                               </h4>
-                              {student.stats.absences.length > 0 ? (
+                              {student.stats && student.stats.absences.length > 0 ? (
                                 <ul className="space-y-2">
                                   {student.stats.absences.map((abs, i) => (
                                     <li key={i} className="text-sm border-l-2 border-red-400 pl-3">
@@ -589,12 +679,11 @@ export default function Home() {
                               )}
                             </div>
 
-                            {/* Kech qolgan kunlari */}
                             <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100">
                               <h4 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
-                                <span className="text-yellow-500 font-black text-lg">{student.stats.lates.length} marta</span> Kech qolgan
+                                <span className="text-yellow-500 font-black text-lg">{student.stats?.lates.length} marta</span> Kech qolgan
                               </h4>
-                              {student.stats.lates.length > 0 ? (
+                              {student.stats && student.stats.lates.length > 0 ? (
                                 <ul className="space-y-2">
                                   {student.stats.lates.map((lat, i) => (
                                     <li key={i} className="text-sm border-l-2 border-yellow-400 pl-3">
@@ -653,7 +742,7 @@ export default function Home() {
                               </thead>
                               <tbody>
                                 {record.details.map((detail, idx) => {
-                                  const student = mockStudents.find(s => s.id === detail.id);
+                                  const student = dbStudents.find(s => s.id === detail.id);
                                   return (
                                     <tr key={idx} className="border-b last:border-0 hover:bg-gray-50 transition">
                                       <td className="py-4 font-bold text-gray-800 pl-2">{student?.name}</td>
@@ -680,7 +769,7 @@ export default function Home() {
             </div>
           )}
 
-          {/* Statistika Modali (Oynachasi) */}
+          {/* Statistika Modali */}
           {statsViewDetail && (
             <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
               <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col animate-fade-in">
@@ -696,7 +785,7 @@ export default function Home() {
                 </div>
                 <div className="p-4 sm:p-5 overflow-y-auto">
                   <ul className="divide-y divide-gray-100">
-                    {mockStudents
+                    {dbStudents
                       .filter(s => {
                         if (statsViewDetail === 'jami') return true;
                         
