@@ -104,8 +104,10 @@ export default function Home() {
           setSessionId(session.id);
           setIsAttendanceClosed(session.isClosed);
           
+          // Agar sessiya ochilgan bo'lsa, demak sardor kiritgan
+          setIsAttendanceDone(true);
+          
           if (session.attendances && session.attendances.length > 0) {
-            setIsAttendanceDone(true);
             const loadedAbsences = session.attendances.map((a: any) => ({
               id: a.studentId,
               reason: a.reason || "",
